@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Maritime AI — Integrated Frontend</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin:0; background: linear-gradient(135deg,#0f172a 0%,#1e293b 100%); color:#fff; }
+    .wrap { max-width:1100px; margin:18px auto; padding:16px; }
+    header h1 { margin:0; font-size:28px; color:#60a5fa; }
+    .grid { display:grid; grid-template-columns:420px 1fr; gap:16px; margin-top:12px; }
+    .panel { background: rgba(255,255,255,0.03); padding:12px; border-radius:10px; }
+    #messages { height:360px; overflow:auto; padding:12px; border-radius:8px; background: rgba(0,0,0,0.15); }
+    .msg { margin:8px 0; padding:8px 12px; border-radius:12px; max-width:85%; line-height:1.4; }
+    .msg.user { background: linear-gradient(135deg,#3b82f6 0%,#1d4ed8 100%); color:#fff; margin-left:auto; text-align:right; }
+    .msg.ai { background: rgba(30,41,59,0.9); color:#e2e8f0; text-align:left; }
+    textarea { width:100%; min-height:60px; background:transparent; color:#fff; border:1px solid rgba(148,163,184,0.15); padding:8px; border-radius:8px; }
+    button { padding:8px 12px; border-radius:8px; border:none; background:#3b82f6; color:#fff; cursor:pointer; }
+    form label { display:block; margin-top:8px; color:#cbd5e1; font-size:13px; }
+    form input { width:100%; padding:8px; border-radius:6px; border:1px solid rgba(148,163,184,0.12); background:transparent; color:#fff; }
+    #map { height:520px; border-radius:8px; }
+    .note { font-size:13px; color:#94a3b8; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🚢 Maritime AI Assistant — Integrated</h1>
+      <div class="note">Type a natural prompt (e.g. "Sail from Mumbai to Los Angeles on Queen Mary") — the AI will fill the form and plot the route.</div>
+    </header>
+
+    <div class="grid">
+      <div class="panel">
+        <div id="messages">
+          <div class="msg ai">🌊 Welcome aboard! I'm Maritime AI — I fill voyage forms, fetch wind estimates, compute distance, and plot the route.</div>
+        </div>
+
+        <div style="margin-top:10px;">
+          <textarea id="prompt" placeholder='Example: "I want to sail from Mumbai to Los Angeles on Queen Mary"'></textarea>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button id="sendBtn">Send</button>
+            <button id="example">Example</button>
+            <button id="clear">Clear</button>
+          </div>
+        </div>
+
+        <hr style="margin:12px 0; border:0; border-top:1px solid rgba(255,255,255,0.04)">
+
+        <form id="voyageForm" onsubmit="return false;">
+          <label>Departure Port</label><input id="departure" />
+          <label>Arrival Port</label><input id="arrival" />
+          <label>Ship Name</label><input id="ship" />
+          <label>Estimated Distance (nm)</label><input id="distance" />
+          <label>Avg Wind (knots)</label><input id="wind" />
+          <label>Estimated Laytime (hrs)</label><input id="laytime" />
+          <div style="margin-top:8px;"><button id="submitVoyage">Submit Voyage (demo)</button></div>
+        </form>
+      </div>
+
+      <div>
+        <div id="map" class="panel"></div>
+        <div class="panel" style="margin-top:8px;">
+          <div id="routeInfo">No route plotted yet.</div>
+          <div id="raw" class="note"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const messages = document.getElementById('messages');
+    const prompt = document.getElementById('prompt');
+
+    function addMsg(role, text) {
+      const d = document.createElement('div');
+      d.className = 'msg ' + (role==='user' ? 'user' : 'ai');
+      d.textContent = text;
+      messages.appendChild(d);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    const map = L.map('map', { center: [20, 78], zoom: 3 });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    let routeLayer = null;
+    let markers = [];
+
+    function clearRoute() {
+      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+      markers.forEach(m => map.removeLayer(m)); markers = [];
+    }
+
+    function plotRoute(route, depName, arrName, distance) {
+      clearRoute();
+      const latlngs = route.map(p => [p[0], p[1]]);
+      routeLayer = L.polyline(latlngs, { weight:4 }).addTo(map);
+      const start = L.marker(latlngs[0]).addTo(map).bindPopup('Departure: ' + (depName||''));
+      const end = L.marker(latlngs[latlngs.length-1]).addTo(map).bindPopup('Arrival: ' + (arrName||''));
+      markers.push(start,end);
+      map.fitBounds(routeLayer.getBounds(), { padding:[30,30] });
+      document.getElementById('routeInfo').textContent = `Plotted route — approx ${distance || 'N/A'} nm.`;
+    }
+
+    function haversine_nm(lat1,lon1,lat2,lon2) {
+      const R = 6371.0;
+      const toRad = v => v * Math.PI/180;
+      const dlat = toRad(lat2-lat1), dlon = toRad(lon2-lon1);
+      const a = Math.sin(dlat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dlon/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const km = R * c;
+      const nm = km * 0.539957;
+      return Math.round(nm*10)/10;
+    }
+
+    const portLookup = {
+      'mumbai': [18.9488,72.8458],
+      'los angeles': [34.0522,-118.2437],
+      'singapore': [1.3521,103.8198],
+      'rotterdam': [51.9244,4.4777],
+      'new york': [40.7128,-74.0060],
+      'shanghai': [31.2304,121.4737],
+      'dubai': [25.2048,55.2708],
+      'kolkata': [22.5726,88.3639],
+      'chennai': [13.0827,80.2707],
+      'kochi': [9.9667,76.2333],
+      'visakhapatnam': [17.6868,83.2185],
+      'mormugao': [15.3950,73.8278],
+      'kandla': [23.0389,70.1353],
+      'paradip': [20.3167,86.6167],
+      'new mangalore': [12.8885,74.8560],
+      'tuticorin': [8.7642,78.1348],
+      'port blair': [11.6234,92.7265]
+    };
+
+    function simulateTechnical(dist) {
+      const wind = Math.round(8 + Math.random()*15);
+      const lay = Math.max(24, Math.round(dist/100));
+      return { wind, lay };
+    }
+
+    function lookupCoord(name) {
+      if (!name) return null;
+      const key = name.toLowerCase().trim();
+      if (portLookup[key]) return portLookup[key];
+      for (const k in portLookup) {
+        if (key.includes(k) || k.includes(key)) return portLookup[k];
+      }
+      return null;
+    }
+
+    async function handleSend() {
+      const text = prompt.value.trim();
+      if (!text) return;
+      addMsg('user', text);
+      prompt.value='';
+      addMsg('ai','Processing...');
+      let m = text.match(/from\s+([A-Za-z\s\.,'-]+?)\s+(?:to|->|-)\s+([A-Za-z\s\.,'-]+)/i);
+      let dep=null, arr=null;
+      if (m) { dep=m[1].trim(); arr=m[2].trim(); }
+      let ms=text.match(/(?:on|ship)\s+([A-Za-z0-9\s\-\'"]+)/i);
+      let ship=ms?ms[1].trim().replace(/['"]/g,''):'';
+      const last = messages.querySelector('.msg.ai:last-child'); if(last && last.textContent==='Processing...') last.remove();
+      if(!dep||!arr){ addMsg('ai','Could not parse departure/arrival. Try again.'); return; }
+      addMsg('ai',`Filled voyage: ${dep} → ${arr}${ship?', Ship: '+ship:''}`);
+      document.getElementById('departure').value=dep;
+      document.getElementById('arrival').value=arr;
+      document.getElementById('ship').value=ship;
+      const depC=lookupCoord(dep); const arrC=lookupCoord(arr);
+      if(depC && arrC){ const dist=haversine_nm(depC[0],depC[1],arrC[0],arrC[1]);
+        document.getElementById('distance').value=dist;
+        const tech=simulateTechnical(dist);
+        document.getElementById('wind').value=tech.wind;
+        document.getElementById('laytime').value=tech.lay;
+        plotRoute([depC,arrC],dep,arr,dist);
+        document.getElementById('raw').textContent=JSON.stringify({dep,arr,ship,dist,...tech});
+      }
+    }
+
+    document.getElementById('sendBtn').addEventListener('click',handleSend);
+    document.getElementById('example').addEventListener('click',()=>{prompt.value='I want to sail from Mumbai to Los Angeles on Queen Mary';});
+    document.getElementById('clear').addEventListener('click',()=>{prompt.value='';});
+    document.getElementById('submitVoyage').addEventListener('click',()=>{addMsg('user','Submitted voyage (demo).'); addMsg('ai','Form submission is demo only.');});
+    prompt.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();handleSend();}});
+  </script>
+</body>
+</html>
